@@ -3,7 +3,7 @@ import cv2
 from scipy.interpolate import splprep, splev
 import matplotlib.pyplot as plt
 
-from bspline_image_label_gen import BsplineMaskGenerator
+from spline_from_mask.bspline_image_label_gen import BsplineMaskGenerator
 
 
 def generate_bspline_curve_padded(num_points=6, num_samples=1000, seed=None, padding=0.1):

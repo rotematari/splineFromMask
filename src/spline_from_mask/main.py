@@ -5,12 +5,11 @@ from pyhocon.config_parser import glob
 from torch.utils.data import DataLoader
 
 # You must define `BsplineMaskGenerator` from earlier
-import unets
-from bspline_dataset import BsplineDataset
-from bspline_image_label_gen import BsplineMaskGenerator
-from models import UNetSmall
+
+from spline_from_mask.bspline_dataset import BsplineDataset
+from spline_from_mask.bspline_image_label_gen import BsplineMaskGenerator
+from spline_from_mask.models import UNetSmall
 import numpy as np
-import unets
 from tqdm import tqdm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
