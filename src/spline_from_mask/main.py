@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from spline_from_mask.bspline_dataset import BsplineDataset
 from spline_from_mask.bspline_image_label_gen import BsplineMaskGenerator
 from spline_from_mask.models import UNetSmall
+from spline_from_mask import unets
 import numpy as np
 from tqdm import tqdm
 
@@ -127,15 +128,18 @@ def train_model_(model, dataloader, epochs=5, lr=1e-4):
 
 
 def train_main():
-
-    all_files = sorted(glob("bspline_dataset/mask_*.png"))
+    path_to_folder = "src/spline_from_mask"
+    all_files = sorted(glob(os.path.join(path_to_folder, "bspline_dataset/mask_*.png")))
     train_files = all_files[:int(0.8 * len(all_files))]
     val_files = all_files[int(0.2 * len(all_files)):]
 
-    train_set = BsplineDataset(path="bspline_dataset", from_disk=True)
+    
+    dataset_path = os.path.join(path_to_folder, "bspline_dataset")
+    assert os.path.exists(dataset_path), f"Dataset path {dataset_path} does not exist."
+    train_set = BsplineDataset(path=dataset_path, from_disk=True)
     train_set.mask_files = train_files
 
-    val_set = BsplineDataset(path="bspline_dataset", from_disk=True)
+    val_set = BsplineDataset(path=dataset_path, from_disk=True)
     val_set.mask_files = val_files
 
     train_loader = DataLoader(train_set, batch_size=16, shuffle=True, num_workers=0)
@@ -156,7 +160,7 @@ def train_main():
         with torch.no_grad():
             y_pred = trained_model(x)
 
-        cv2.imwrite(f'bspline_dataset/res_{i}.png', 255*np.asarray(y_pred[0, 0].cpu()))
+        cv2.imwrite(f'src/spline_from_mask/bspline_dataset/res_{i}.png', 255*np.asarray(y_pred[0, 0].cpu()))
 
     torch.save(trained_model.state_dict(), 'bspline_dataset/model.pt')
 
@@ -215,4 +219,4 @@ def process_folder(folder_path):
 if __name__ == '__main__':
     # testing()
     train_main()
-    process_folder(r'bspline_dataset')
+    process_folder(r'src/spline_from_mask/bspline_dataset')

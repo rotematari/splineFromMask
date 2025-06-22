@@ -19,7 +19,9 @@ dependencies = [
   "scipy",
   "matplotlib",
   "tqdm",
-  "pyhocon"
+  "pyhocon",
+  "pyyaml",
+  "typeguard",
 ]
 
 [tool.setuptools.packages.find]

@@ -1,1 +1,5 @@
 .venv
+src/spline_from_mask/bspline_dataset
+src/spline_from_mask/__pycache__
+*.egg-info
+src/splineFromMask.egg-info/

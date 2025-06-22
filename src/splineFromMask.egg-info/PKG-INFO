@@ -12,3 +12,5 @@ Requires-Dist: scipy
 Requires-Dist: matplotlib
 Requires-Dist: tqdm
 Requires-Dist: pyhocon
+Requires-Dist: pyyaml
+Requires-Dist: typeguard

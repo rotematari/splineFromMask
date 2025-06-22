@@ -75,7 +75,7 @@ def draw_grayscale_curve(curve, image_size=512, thickness=7):
 # plt.show()
 
 
-gen = BsplineMaskGenerator(image_size=128, curve_thickness=3, grayscale_mode='center', seed=42)
+gen = BsplineMaskGenerator(image_size=256, curve_thickness=3, grayscale_mode='linear', seed=42)
 
 # On-the-fly sample
 mask, curve = gen.generate()
@@ -88,5 +88,6 @@ plt.axis('off')
 plt.show()
 
 # Save dataset to disk
-gen.save_dataset(output_dir="bspline_dataset", count=10000, file_format='png')
+
+gen.save_dataset(output_dir="src/spline_from_mask/bspline_dataset", count=10000, file_format='png')
 
