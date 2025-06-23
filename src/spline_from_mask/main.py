@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from pyhocon.config_parser import glob
 from torch.utils.data import DataLoader
-
+from typing import Dict
 # You must define `BsplineMaskGenerator` from earlier
 
 from spline_from_mask.bspline_dataset import BsplineDataset
@@ -12,11 +12,14 @@ from spline_from_mask.models import UNetSmall
 from spline_from_mask import unets
 import numpy as np
 from tqdm import tqdm
+import wandb as wb
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def train_model(model, train_loader, val_loader, epochs=5, lr=1e-4):
+def train_model(model, train_loader, val_loader,
+                epochs=5, lr=1e-4,
+                wandb_run=None):
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
@@ -53,20 +56,29 @@ def train_model(model, train_loader, val_loader, epochs=5, lr=1e-4):
         avg_val = total_val_loss / len(val_loader)
         train_losses.append(avg_train)
         val_losses.append(avg_val)
-
+        if wandb_run:
+            wb.log({
+                "train_loss": avg_train,
+                "val_loss": avg_val,
+            })
         print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train:.4f} - Val Loss: {avg_val:.4f}")
 
     # Plot loss curves
     import matplotlib.pyplot as plt
-    plt.plot(train_losses, label="Train")
-    plt.plot(val_losses, label="Val")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Training vs Validation Loss")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
+    fig,ax = plt.subplots()
+    ax.plot(train_losses, label="Train")
+    ax.plot(val_losses, label="Val")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_title("Training vs Validation Loss")
+    ax.legend()
+    ax.grid(True)
+    # ax.tight_layout()
+    if wandb_run:
+        wb.Image(fig, caption="Training and Validation Loss")
+        wb.log({"loss_plot": fig})
+    plt.savefig("loss_plot.png")
+    # plt.show()
 
     return model
 
@@ -127,19 +139,19 @@ def train_model_(model, dataloader, epochs=5, lr=1e-4):
 
 
 
-def train_main():
-    path_to_folder = "src/spline_from_mask"
-    all_files = sorted(glob(os.path.join(path_to_folder, "bspline_dataset/mask_*.png")))
+def train_main(wandb_run=None,
+               config: Dict = None):
+
+    all_files = sorted(glob(os.path.join(config['dataset_dir'], "mask_*.png")))
     train_files = all_files[:int(0.8 * len(all_files))]
     val_files = all_files[int(0.2 * len(all_files)):]
 
-    
-    dataset_path = os.path.join(path_to_folder, "bspline_dataset")
-    assert os.path.exists(dataset_path), f"Dataset path {dataset_path} does not exist."
-    train_set = BsplineDataset(path=dataset_path, from_disk=True)
+
+
+    train_set = BsplineDataset(path=config['dataset_dir'], from_disk=True)
     train_set.mask_files = train_files
 
-    val_set = BsplineDataset(path=dataset_path, from_disk=True)
+    val_set = BsplineDataset(path=config['dataset_dir'], from_disk=True)
     val_set.mask_files = val_files
 
     train_loader = DataLoader(train_set, batch_size=16, shuffle=True, num_workers=0)
@@ -148,8 +160,10 @@ def train_main():
     # model = UNetSmall()
     model = unets.UNet(1,1)
     model = model.to(device)
-    trained_model = train_model(model, train_loader, val_loader, epochs=30)
-    # trained_model = model
+    trained_model = train_model(model, train_loader, val_loader,
+                                epochs=config["epochs"], lr=config['learning_rate'],
+                                wandb_run=wandb_run)
+    
 
     import matplotlib.pyplot as plt
 
@@ -159,21 +173,22 @@ def train_main():
         x, y = x.to(device), y.to(device)
         with torch.no_grad():
             y_pred = trained_model(x)
+        file_name = os.path.join(config['results_dir'], f'res_{i}.png')
+        cv2.imwrite(file_name, 255*np.asarray(y_pred[0, 0].cpu()))
+    checkpoint_path = os.path.join(config['checkpoints_dir'], f'model_epoch_{config["epochs"]}.pth')
+    torch.save(trained_model.state_dict(), checkpoint_path)
 
-        cv2.imwrite(f'src/spline_from_mask/bspline_dataset/res_{i}.png', 255*np.asarray(y_pred[0, 0].cpu()))
 
-    torch.save(trained_model.state_dict(), 'bspline_dataset/model.pt')
-
-
-def testing():
+def testing(wandb_run=None,
+            config: Dict = None):
     model = unets.UNet(1,1)
     model = model.to(device)
     model.eval()
 
-    all_files = sorted(glob("bspline_dataset/mask_*.png"))
+    all_files = sorted(glob(os.path.join(config['dataset_dir'], "mask_*.png")))
     train_files = all_files[:int(0.8 * len(all_files))]
     val_files = all_files[int(0.2 * len(all_files)):]
-    val_set = BsplineDataset(path="bspline_dataset", from_disk=True)
+    val_set = BsplineDataset(path=config['dataset_dir'], from_disk=True)
     val_set.mask_files = val_files
     val_loader = DataLoader(val_set, batch_size=1, shuffle=False, num_workers=0)
 
@@ -183,8 +198,8 @@ def testing():
         x, y = x.to(device), y.to(device)
         with torch.no_grad():
             y_pred = model(x)
-
-        cv2.imwrite(f'bspline_dataset/res_{i}.png', 255*np.asarray(y_pred[0, 0].cpu()))
+        file_name = os.path.join(config['results_dir'], f'res_{i}.png')
+        cv2.imwrite(file_name, 255*np.asarray(y_pred[0, 0].cpu()))
 
 import os
 import cv2
@@ -201,7 +216,9 @@ def rescale_grayscale_image(img):
             img = np.clip(img, 1, 255).astype(np.uint8)
     return img
 
-def process_folder(folder_path):
+def process_folder(folder_path,config=None,wandb_run=None):
+    count = 0
+    
     for filename in os.listdir(folder_path):
         if filename.startswith('res_') and filename.endswith('.png'):
             file_path = os.path.join(folder_path, filename)
@@ -212,11 +229,51 @@ def process_folder(folder_path):
             file_path = os.path.join(folder_path, "_" + filename)
             rescaled_img = rescale_grayscale_image(img)
             cv2.imwrite(file_path, rescaled_img)
-            print(f"Rescaled and saved: {filename}")
+            if wandb_run and count < config['wandb_num_images']:
+                count += 1
+                wb.log({f"rescaled_{filename}": wb.Image(rescaled_img, caption=f"Rescaled {filename}")})
+            # print(f"Rescaled and saved: {filename}")
 
 
 
 if __name__ == '__main__':
-    # testing()
-    train_main()
-    process_folder(r'src/spline_from_mask/bspline_dataset')
+    
+    is_wandb =  True
+    if is_wandb:
+        import wandb as wb
+        wb.login()
+    else:
+        print("WandB is disabled, running without logging.")
+    
+    DATASET_DIR_PATH = "src/spline_from_mask/bspline_dataset"
+    assert os.path.exists(DATASET_DIR_PATH), f"Dataset path {DATASET_DIR_PATH} does not exist."
+    RESULTS_DIR_PATH = "src/spline_from_mask/results"
+    if not os.path.exists(RESULTS_DIR_PATH):
+        os.makedirs(RESULTS_DIR_PATH)
+    CHECK_POINTS_DIR_PATH = "src/spline_from_mask/checkpoints"
+    if not os.path.exists(CHECK_POINTS_DIR_PATH):
+        os.makedirs(CHECK_POINTS_DIR_PATH)
+        
+    
+    config = {
+        'dataset_dir': DATASET_DIR_PATH,
+        'results_dir': RESULTS_DIR_PATH,
+        'checkpoints_dir': CHECK_POINTS_DIR_PATH,
+        'epochs': 50,
+        'learning_rate': 1e-4,
+        'wandb_num_images': 2,
+    }
+    
+    wandb_run = wb.init(
+        entity="dlo",  
+        project="spline_from_mask",
+        config=config,
+        name="spline_from_mask_training",
+        ) if is_wandb else None
+    
+
+    train_main(wandb_run=wandb_run, config=config)
+    process_folder(config['results_dir'],wandb_run=wandb_run, config=config)
+
+    if wandb_run:
+        wandb_run.finish()

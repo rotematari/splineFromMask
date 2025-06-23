@@ -70,7 +70,7 @@ class BsplineMaskGenerator:
     def generate(self) -> Tuple[np.ndarray, np.ndarray]:
         """Generate a single (image, curve_points) sample."""
         curve = self._generate_curve()
-        curve = self._resample_arclength(curve, self.curve_samples)
+        # curve = self._resample_arclength(curve, self.curve_samples)
         mask = self._draw_mask(curve)
         return mask, curve
 

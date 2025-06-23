@@ -22,6 +22,8 @@ dependencies = [
   "pyhocon",
   "pyyaml",
   "typeguard",
+  "wandb",
+  "plotly",
 ]
 
 [tool.setuptools.packages.find]

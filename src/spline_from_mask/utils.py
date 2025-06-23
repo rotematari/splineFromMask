@@ -1,6 +1,9 @@
 import os
 import cv2
 import numpy as np
+import wandb
+
+
 
 def compute_difference_images(folder_path):
     files = os.listdir(folder_path)
