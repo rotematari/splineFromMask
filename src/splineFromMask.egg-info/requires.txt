@@ -6,3 +6,5 @@ tqdm
 pyhocon
 pyyaml
 typeguard
+wandb
+plotly

@@ -14,3 +14,5 @@ Requires-Dist: tqdm
 Requires-Dist: pyhocon
 Requires-Dist: pyyaml
 Requires-Dist: typeguard
+Requires-Dist: wandb
+Requires-Dist: plotly
