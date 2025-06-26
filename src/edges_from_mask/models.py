@@ -2,6 +2,24 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
+import segmentation_models_pytorch as smp
+
+class EncoderHeatmapHead(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # load with an arbitrary number of classes (e.g. 1) just to build the model
+        backbone = smp.DeepLabV3Plus(
+            encoder_name="resnet18",
+            encoder_weights="imagenet",
+            in_channels=1,
+            classes=10
+        )
+        self.backbone = backbone
+
+
+    def forward(self, x):
+        feats = self.backbone(x)        # returns feature map of shape (B, in_ch, H, W)
+        return feats         # projects to (B, 1, H, W)
 
 class EncoderRegressionHead(nn.Module):
     """
@@ -61,65 +79,46 @@ class EncoderRegressionHead_2(nn.Module):
         super().__init__()
         self.out_dim = out_dim
 
-        # --- Backbone: ResNet34 encoder ---
-        resnet = models.resnet34(
-            weights=models.ResNet34_Weights.DEFAULT if pretrained else None
+        # --- Backbone: ResNet18 encoder ---
+        resnet = models.resnet18(
+            weights=models.ResNet18_Weights.DEFAULT if pretrained else None
         )
-
-        # Adapt first conv if input channels != 3
-        # for param in resnet.parameters():
-        #     param.requires_grad = True
-        # for name, p in resnet.named_parameters():
-        #     # keep everything frozen except layer4
-        #     if "layer4" in name:
-        #         p.requires_grad = True
-        # if in_channels != 3:
-        #     resnet.conv1 = nn.Conv2d(
-        #         in_channels,
-        #         resnet.conv1.out_channels,
-        #         kernel_size=resnet.conv1.kernel_size,
-        #         stride=resnet.conv1.stride,
-        #         padding=resnet.conv1.padding,
-        #         bias=False,
-        #     )
-        #     nn.init.kaiming_normal_(resnet.conv1.weight, mode='fan_out', nonlinearity='relu')
-        #     resnet.conv1.weight.requires_grad = True
-
+        # freeze the backbone layers
+        for param in resnet.parameters():
+            param.requires_grad = True
+        # Unfreeze the last layer (layer4)
+        for param in resnet.layer4.parameters():
+            param.requires_grad = True
         # Remove avgpool and fully-connected layers
         modules = list(resnet.children())[:-2]
         self.encoder = nn.Sequential(*modules)
         # freeze the encoder layers
 
-        self.feature_dim = 2048  # final channel count of ResNet18
+        self.feature_dim = 512  # final channel count of ResNet18
 
         # # --- Regression head ---
-        self.avgpool = nn.AdaptiveAvgPool2d((2, 2))
-        # self.dropout = nn.Dropout(dropout)
-        # self.fc1 = nn.Linear(self.feature_dim, mlp_hidden)
-        
-        # self.fc2 = nn.Linear(mlp_hidden, mlp_hidden//2)
-        # self.fc3 = nn.Linear(mlp_hidden//2, 4)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 
         self.mlp =  nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(self.feature_dim, mlp_hidden),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(mlp_hidden, mlp_hidden//2),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(mlp_hidden//2, 2),
+            # nn.Dropout(dropout),
+            nn.Linear(self.feature_dim, 2),
+            # nn.ReLU(inplace=True),
+            # # nn.Dropout(dropout),
+            # nn.Linear(mlp_hidden, mlp_hidden//2),
+            # nn.ReLU(inplace=True),
+            # # nn.Dropout(dropout),
+            # nn.Linear(mlp_hidden//2, 2),
             
         )
         self.mlp2 =  nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(self.feature_dim, mlp_hidden),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(mlp_hidden, mlp_hidden//2),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(mlp_hidden//2, 2),
+            # nn.Dropout(dropout),
+            nn.Linear(self.feature_dim, 2),
+            # nn.ReLU(inplace=True),
+            # # nn.Dropout(dropout),
+            # nn.Linear(mlp_hidden, mlp_hidden//2),
+            # nn.ReLU(inplace=True),
+            # # nn.Dropout(dropout),
+            # nn.Linear(mlp_hidden//2, 2),
             
             
         )
@@ -134,7 +133,7 @@ class EncoderRegressionHead_2(nn.Module):
         Returns:
             torch.Tensor: Regression output of shape (B, num_spline_points, out_dim).
         """
-        # x = x.repeat(1, 3, 1, 1)  # Convert single-channel input to 3 channels (e.g., for ResNet) 
+ 
         # Extract features
         feat = self.encoder(x)                # (B, feature_dim, H', W')
         pooled = self.avgpool(feat).view(feat.size(0), -1)  # (B, feature_dim)
@@ -143,9 +142,13 @@ class EncoderRegressionHead_2(nn.Module):
         p1 = self.mlp(pooled)                  # (B, mlp_hidden//2)
         p2 = self.mlp2(pooled)                  # (B, mlp_hidden//2)
         x = torch.cat([p1, p2], dim=1)         # (B, mlp_hidden)
-        # x = p1
+
         # Reshape to (B, num_spline_points, out_dim)
         return x.view(-1, 2, 2)
+
+
+
+
 
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -218,3 +221,51 @@ class UNet(nn.Module):
         
         # out = torch.sigmoid(out)  # Apply sigmoid to ensure output is in [0, 1] range
         return out
+    
+    
+    
+if __name__ == "__main__":
+    # Example usage
+    model = EncoderHeatmapHead()
+    input_tensor = torch.randn(1, 1, 256, 256)  # Batch size of 1, 1 channel, 256x256 image
+    # load one image
+    
+    path = "/home/admina/splineFromMask/src/spline_from_mask/dataset_256_32_50pts/images/00001_00.png"  # Replace with your image path
+    from PIL import Image
+    import torchvision.transforms as transforms
+    
+    # load and pre procces gray scale image 
+    image = Image.open(path).convert("L")  # Convert to grayscale
+    transform = transforms.Compose([
+        transforms.Resize((256, 256)),  # Resize to 256x256
+        transforms.ToTensor(),           # Convert to tensor
+        transforms.Normalize(mean=[0.5], std=[0.5])  # Normalize to [-1, 1]
+    ])
+    input_tensor = transform(image).unsqueeze(0)
+    model.eval()  # Set the model to evaluation mode
+    output = model(input_tensor)
+    print("Output shape:", output.shape)
+    
+    
+    # plot the heatmap
+    import matplotlib.pyplot as plt
+    # Convert output to numpy for plotting
+    heatmap = output[0].detach().numpy()  # Shape: (2, 256, 256)
+
+    # Create figure with subplots
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Plot first channel
+    im1 = axes[0].imshow(heatmap[0], cmap='hot', interpolation='nearest')
+    axes[0].set_title('Heatmap Channel 1')
+    axes[0].axis('off')
+    plt.colorbar(im1, ax=axes[0])
+
+    # Plot second channel
+    im2 = axes[1].imshow(heatmap[1], cmap='hot', interpolation='nearest')
+    axes[1].set_title('Heatmap Channel 2')
+    axes[1].axis('off')
+    plt.colorbar(im2, ax=axes[1])
+
+    plt.tight_layout()
+    plt.show()

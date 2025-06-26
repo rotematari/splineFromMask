@@ -11,26 +11,47 @@ class SplinePointDataset(Dataset):
     """
     Custom PyTorch Dataset for loading mask images and their corresponding B-spline control points.
     """
-    def __init__(self, root, normalize=True, img_size=(256, 256), num_pts=200):
+    def __init__(self, root, normalize=True, resize_to=None):
         """
         Args:
             root (str): Root directory of the dataset, containing 'images' and 'labels' subfolders.
-            img_size (tuple): The target size to resize images to.
-            num_pts (int): The number of points defining the spline.
+            resize_to (tuple or None): If provided, resize images to this size. If None, use original image size.
         """
         self.root = root
-        self.img_size = img_size
-        self.num_pts = num_pts
         self.normalize = normalize
-
+        self.resize_to = resize_to
+        
+        # Setup directories and get file list
         self.img_dir = os.path.join(root, "images")
         self.lbl_dir = os.path.join(root, "labels")
         self.ids = sorted(os.listdir(self.img_dir))
-        self.transform = transforms.Compose([
-            transforms.Resize(img_size),
-            transforms.ToTensor(),
-        ])
-
+        
+        if len(self.ids) > 0:
+            # Load first sample to get spline size and image size
+            first_id = self.ids[0].split(".")[0]
+            first_lbl = np.load(os.path.join(self.lbl_dir, f"{first_id}.npz"))
+            spline = first_lbl["spline"]
+            self.num_pts = spline.shape[0]
+            
+            # Get image size from first image
+            first_img = Image.open(os.path.join(self.img_dir, f"{first_id}.png"))
+            self.img_size = first_img.size  # (width, height)
+            first_img.close()
+        else:
+            self.num_pts = 200  # fallback
+            self.img_size = (256, 256)  # fallback
+            
+        # Set up transforms based on whether we're resizing
+        if resize_to is not None:
+            self.img_size = resize_to
+            self.transform = transforms.Compose([
+                transforms.Resize(resize_to),
+                transforms.ToTensor(),
+            ])
+        else:
+            self.transform = transforms.Compose([
+                transforms.ToTensor(),
+            ])
 
     def __len__(self):
         return len(self.ids)
@@ -68,29 +89,53 @@ class SplineEndPointDataset(Dataset):
     """
     Custom PyTorch Dataset for loading mask images and their corresponding B-spline control points.
     """
-    def __init__(self, root, normalize=True, img_size=(256, 256), num_pts=200):
+    def __init__(self, root, normalize=True, resize_to=None):
         """
         Args:
             root (str): Root directory of the dataset, containing 'images' and 'labels' subfolders.
-            img_size (tuple): The target size to resize images to.
-            num_pts (int): The number of points defining the spline.
+            resize_to (tuple or None): If provided, resize images to this size. If None, use original image size.
         """
         self.root = root
-        self.img_size = img_size
-        self.num_pts = num_pts
         self.normalize = normalize
-
+        self.resize_to = resize_to
+        
+        # Setup directories and get file list
         self.img_dir = os.path.join(root, "images")
         self.lbl_dir = os.path.join(root, "labels")
         self.ids = sorted(os.listdir(self.img_dir))
-        self.transform = transforms.Compose([
-            transforms.Resize(img_size),
-            transforms.ToTensor(),
-            transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                std =[0.229, 0.224, 0.225])
-        ])
+        
+        if len(self.ids) > 0:
+            # Load first sample to get spline size and image size
+            first_id = self.ids[0].split(".")[0]
+            first_lbl = np.load(os.path.join(self.lbl_dir, f"{first_id}.npz"))
+            spline = first_lbl["spline"]
+            self.num_pts = spline.shape[0]
+            
+            # Get image size from first image
+            first_img = Image.open(os.path.join(self.img_dir, f"{first_id}.png"))
+            self.img_size = first_img.size  # (width, height)
+            first_img.close()
+        else:
+            self.num_pts = 200  # fallback
+            self.img_size = (256, 256)  # fallback
 
+        # Set up transforms based on whether we're resizing
+        if resize_to is not None:
+            self.img_size = resize_to
+            self.transform = transforms.Compose([
+                transforms.Resize(resize_to),
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                    std =[0.229, 0.224, 0.225])
+            ])
+        else:
+            self.transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                    std =[0.229, 0.224, 0.225])
+            ])
 
     def __len__(self):
         return len(self.ids)
@@ -106,6 +151,7 @@ class SplineEndPointDataset(Dataset):
         lbl = np.load(os.path.join(self.lbl_dir, f"{id_}.npz"))
         spline = lbl["spline"]  # Shape: (num_pts, 2)
         # Normalize spline points
+        
         if self.normalize:
             spline = self.normalize_spline(torch.from_numpy(spline).float())
         # get end points
@@ -142,14 +188,6 @@ class SplineEndPointDataset(Dataset):
         spline[:, 1] /= (H - 1)
         return spline
     
-    
-    
-import os
-import numpy as np
-import torch
-from torch.utils.data import Dataset
-from torchvision import transforms
-from PIL import Image
 
 class SplineEndPointDatasetHM(Dataset):
     """
@@ -160,22 +198,43 @@ class SplineEndPointDatasetHM(Dataset):
     def __init__(self,
                  root: str,
                  normalize: bool = True,
-                 img_size: tuple = (256, 256),
-                 num_pts: int = 200,
+                 resize_to: tuple = None,
                  sigma: float = 5.0):
+        
         self.root       = root
         self.normalize  = normalize
-        self.img_size   = img_size
-        self.num_pts    = num_pts
+        self.resize_to  = resize_to
         self.sigma      = sigma
 
         self.img_dir = os.path.join(root, "images")
         self.lbl_dir = os.path.join(root, "labels")
         self.ids     = sorted([fn.split(".")[0] for fn in os.listdir(self.img_dir)])
-        self.transform = transforms.Compose([
-            transforms.Resize(img_size),
-            transforms.ToTensor(),        # → [1, H, W] in [0,1]
-        ])
+        
+        if len(self.ids) > 0:
+            # Load first sample to get spline size and image size
+            first_lbl = np.load(os.path.join(self.lbl_dir, f"{self.ids[0]}.npz"))
+            spline = first_lbl["spline"]
+            self.num_pts = spline.shape[0]
+            
+            # Get image size from first image
+            first_img = Image.open(os.path.join(self.img_dir, f"{self.ids[0]}.png"))
+            self.img_size = first_img.size  # (width, height)
+            first_img.close()
+        else:
+            self.num_pts = 200  # fallback
+            self.img_size = (256, 256)  # fallback
+            
+        # Set up transforms based on whether we're resizing
+        if resize_to is not None:
+            self.img_size = resize_to
+            self.transform = transforms.Compose([
+                transforms.Resize(resize_to),
+                transforms.ToTensor(),        # → [1, H, W] in [0,1]
+            ])
+        else:
+            self.transform = transforms.Compose([
+                transforms.ToTensor(),        # → [1, H, W] in [0,1]
+            ])
 
     def __len__(self):
         return len(self.ids)
@@ -187,11 +246,26 @@ class SplineEndPointDatasetHM(Dataset):
         for i, (x, y) in enumerate(ep):
             hms[i] = np.exp(-((xs - x)**2 + (ys - y)**2) / (2*sigma*sigma))
         return hms
-
+    @staticmethod
+    def make_endpoint_heatmaps_1d(ep: np.ndarray, H: int, W: int, sigma: float=5.0):
+        ys, xs = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+        
+        # Create single heatmap with both points
+        hm = np.zeros((H, W), dtype=np.float32)
+        
+        for i, (x, y) in enumerate(ep):
+            # Add gaussian for each endpoint to the same heatmap
+            gaussian = np.exp(-((xs - x)**2 + (ys - y)**2) / (2*sigma*sigma))
+            hm = np.maximum(hm, gaussian)  # Take maximum to avoid overlap interference
+        
+        # Return shape [1, H, W] to maintain consistency with the rest of the code
+        return hm[np.newaxis, :]
+    
     def __getitem__(self, idx: int):
         id_ = self.ids[idx]
         # -- load & preprocess mask --
         mask = Image.open(os.path.join(self.img_dir, f"{id_}.png")).convert("L")
+        original_size = mask.size  # (width, height)
         mask = self.transform(mask)  # FloatTensor [1,H,W]
 
         # -- load spline & pick endpoints --
@@ -199,21 +273,214 @@ class SplineEndPointDatasetHM(Dataset):
         spline = data["spline"]              # (num_pts, 2) in pixel coords
         ep_pts = spline[[0, -1], :].astype(np.float32)  # [[x1,y1],[x2,y2]]
 
+        # Scale coordinates if image was resized
+        if self.resize_to is not None:
+            scale_x = self.img_size[0] / original_size[0]
+            scale_y = self.img_size[1] / original_size[1]
+            ep_pts[:, 0] *= scale_x  # x coordinates
+            ep_pts[:, 1] *= scale_y  # y coordinates
+
         # -- normalize for other uses (optional) --
         if self.normalize:
-            W, H = self.img_size
-            spline_norm = spline.copy()
+            W, H = self.img_size[0], self.img_size[1]  # img_size is (width, height)
+            spline_norm = ep_pts.copy()
             spline_norm[:,0] /= (W - 1)
             spline_norm[:,1] /= (H - 1)
-            ep_norm = spline_norm[[0, -1], :]
+            ep_norm = spline_norm
             # but for heatmaps we want pixel coords:
             ep_px = ep_norm * np.array([[W - 1, H - 1]])
         else:
             ep_px = ep_pts
 
         # -- build heatmaps in pixel space --
-        H, W = self.img_size
-        hms = self.make_endpoint_heatmaps(ep_px, H, W, self.sigma)
-        heatmaps = torch.from_numpy(hms)  # FloatTensor [2,H,W]
+        H, W = self.img_size[1], self.img_size[0]  # Convert to (height, width)
+        hms = self.make_endpoint_heatmaps_1d(ep_px, H, W, self.sigma)
+        heatmaps = torch.from_numpy(hms)  # FloatTensor [1,H,W]
 
         return mask, heatmaps
+
+
+class SplineHMDataset(Dataset):
+    """
+    Custom PyTorch Dataset for loading mask images and their corresponding B-spline points as heatmaps .
+    """
+    def __init__(self, root, normalize=True, resize_to=None, sigma=5.0):
+        """
+        Args:
+            root (str): Root directory of the dataset, containing 'images' and 'labels' subfolders.
+            resize_to (tuple or None): If provided, resize images to this size. If None, use original image size.
+            sigma (float): Standard deviation for Gaussian heatmaps.
+        """
+        self.root = root
+        self.normalize = normalize
+        self.resize_to = resize_to
+        self.sigma = sigma
+        
+        self.img_dir = os.path.join(root, "images")
+        self.lbl_dir = os.path.join(root, "labels")
+        self.ids = sorted(os.listdir(self.img_dir))
+        
+        if len(self.ids) > 0:
+            # Load first sample to get spline size and image size
+            first_id = self.ids[0].split(".")[0]
+            first_lbl = np.load(os.path.join(self.lbl_dir, f"{first_id}.npz"))
+            spline = first_lbl["spline"]
+            self.num_pts = spline.shape[0]
+            
+            # Get image size from first image
+            first_img = Image.open(os.path.join(self.img_dir, f"{first_id}.png"))
+            self.img_size = first_img.size  # (width, height)
+            first_img.close()
+        else:
+            self.num_pts = 200  # fallback
+            self.img_size = (256, 256)  # fallback
+            
+        # Set up transforms based on whether we're resizing
+        if resize_to is not None:
+            self.img_size = resize_to
+            self.transform = transforms.Compose([
+                transforms.Resize(resize_to),
+                transforms.ToTensor(),
+            ])
+        else:
+            self.transform = transforms.Compose([
+                transforms.ToTensor(),
+            ])
+
+
+    def __len__(self):
+        return len(self.ids)
+
+    def __getitem__(self, idx):
+        """
+        Retrieves a single data sample (image and spline points).
+        """
+        id_ = self.ids[idx].split(".")[0]
+        mask = Image.open(os.path.join(self.img_dir, f"{id_}.png")).convert("L")
+        original_size = mask.size  # (width, height)
+        mask = self.transform(mask)  # Shape: (1, H, W)
+        
+        lbl = np.load(os.path.join(self.lbl_dir, f"{id_}.npz"))
+        spline = lbl["spline"]  # Shape: (num_pts, 2)
+        
+        # Scale spline coordinates if image was resized
+        if self.resize_to is not None:
+            scale_x = self.img_size[0] / original_size[0]
+            scale_y = self.img_size[1] / original_size[1]
+            spline = spline.copy()
+            spline[:, 0] *= scale_x  # x coordinates
+            spline[:, 1] *= scale_y  # y coordinates
+        
+        H, W = self.img_size[1], self.img_size[0]  # Note: img_size is (width, height)
+        hms = self.spline_to_heatmaps_nd(spline, H, W, self.sigma)
+        heatmaps = torch.from_numpy(hms)  # FloatTensor [num_pts,H,W]
+        return mask, heatmaps
+    
+    @staticmethod
+    def spline_to_heatmaps_1d(spline: np.ndarray, H: int, W: int, sigma: float=5.0):
+        ys, xs = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+        
+        # Create single heatmap with both points
+        hm = np.zeros((H, W), dtype=np.float32)
+
+        for i, (x, y) in enumerate(spline):
+            # Add gaussian for each endpoint to the same heatmap
+            gaussian = np.exp(-((xs - x)**2 + (ys - y)**2) / (2*sigma*sigma))
+            hm = np.maximum(hm, gaussian)  # Take maximum to avoid overlap interference
+        
+        # Return shape [1, H, W] to maintain consistency with the rest of the code
+        return hm[np.newaxis, :]
+    @staticmethod
+    def spline_to_heatmaps_nd(spline: np.ndarray, H: int, W: int, sigma: float=5.0):
+        ys, xs = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+        
+        # Create single heatmap with both points
+        hm = np.zeros((spline.shape[0], H, W), dtype=np.float32)
+
+        for i, (x, y) in enumerate(spline):
+            # Add gaussian for each endpoint to the same heatmap
+            gaussian = np.exp(-((xs - x)**2 + (ys - y)**2) / (2*sigma*sigma))
+            hm[i] =  gaussian  # Store each endpoint's heatmap in the first dimension
+        
+        # Return shape [1, H, W] to maintain consistency with the rest of the code
+        return hm
+if __name__ == "__main__":
+    
+    
+    # plot the labels of SplineHMDataset
+
+    dataset = SplineHMDataset(root="src/spline_dataset/ds_256x256_32splines_10pts_4-10ctrl_k3_s0p9_dim2",
+                              sigma=5.0)
+
+    import matplotlib.pyplot as plt
+
+    # Get one sample
+    mask, heatmaps = dataset[0]
+    def batch_centroids_torch(batch_H):
+        """
+        batch_H: torch tensor of shape (C, H, W)
+        returns a np.array of (x_center, y_center) for each channel
+        """
+        C, H, W = batch_H.shape
+        # make coordinate grids once
+        ys = torch.arange(H, device=batch_H.device, dtype=batch_H.dtype).view(1, H, 1).expand(C, H, W)
+        xs = torch.arange(W, device=batch_H.device, dtype=batch_H.dtype).view(1, 1, W).expand(C, H, W)
+        totals = batch_H.sum(dim=(1,2))               # shape (C,)
+        x_centers = (xs * batch_H).sum(dim=(1,2)) / totals
+        y_centers = (ys * batch_H).sum(dim=(1,2)) / totals
+        return np.array(list(zip(x_centers.tolist(), y_centers.tolist())))
+    centers = batch_centroids_torch(heatmaps)
+    # Convert tensors to numpy for plotting
+    mask_np = mask.squeeze().numpy()  # Remove channel dimension
+
+    if heatmaps.shape[0] == 1:
+        heatmap_np = heatmaps[0].numpy()
+    
+    else:
+        heatmap_np = heatmaps.numpy()  # First endpoint heatmap
+    # Create subplot with 1 row, 4 columns
+    fig, axes = plt.subplots(1, 3)
+
+    # Plot mask
+    axes[0].imshow(mask_np, cmap='gray')
+    axes[0].set_title('Mask')
+    axes[0].axis('off')
+
+    # if heatmaps.shape[0] == 1:
+    # Plot first heatmap
+    axes[1].imshow(heatmap_np[0], cmap='hot')
+    axes[1].set_title('Heatmap 1 (First Endpoint)')
+    axes[1].axis('off')
+    # Plot mask with overlaid heatmaps
+    # get heatmap coords
+    def find_heatmap_center_weighted(heatmap_coords, heatmap_values):
+        """
+        Find the weighted centroid of heatmap coordinates.
+        
+        Args:
+            heatmap_coords: np.array of shape (N, 2) with (y, x) coordinates
+            heatmap_values: np.array of shape (N,) with corresponding heatmap values
+        
+        Returns:
+            center: np.array of shape (2,) with (y, x) center coordinates
+        """
+        # Weighted average of coordinates
+        total_weight = np.sum(heatmap_values)
+        center_y = np.sum(heatmap_coords[:, 0] * heatmap_values) / total_weight
+        center_x = np.sum(heatmap_coords[:, 1] * heatmap_values) / total_weight
+        
+        return np.array([center_y, center_x])
+
+    # If you have multiple heatmaps, shape (C, H, W):
+
+
+    axes[2].imshow(mask_np, cmap='gray', alpha=0.7)
+    axes[2].imshow(heatmap_np[0], cmap='Reds', alpha=0.5)
+    # Plot the center of the heatmap
+    axes[2].scatter(centers[:, 0], centers[:, 1], color='blue', s=100, marker='x', label='Heatmap Center')
+    axes[2].legend()
+    axes[2].set_title('Mask with Overlaid Heatmaps')
+    axes[2].axis('off')
+
+    plt.tight_layout()
+    plt.show()
