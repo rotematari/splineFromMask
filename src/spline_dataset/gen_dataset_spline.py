@@ -3,7 +3,11 @@ import numpy as np
 from scipy.interpolate import splprep, splev
 from scipy.spatial.transform import Rotation as R
 from PIL import Image, ImageDraw
-def gen_random_bspline(k=3, s=0.1, num_ctrl_pts=None, num_ctrl_range=(4, 10), num_output_pts=200, dim=2, dense_pts_for_mask=1000):
+import matplotlib.pyplot as plt
+
+def gen_random_bspline(k=3, s=0.1, num_ctrl_pts=None, num_ctrl_range=10, 
+                       num_output_pts=200, dim=2, 
+                       dense_pts_for_mask=1000,norm=False):
     """
     Generate a random B-spline and sample points evenly distributed along arc length.
     
@@ -37,30 +41,38 @@ def gen_random_bspline(k=3, s=0.1, num_ctrl_pts=None, num_ctrl_range=(4, 10), nu
     k : int
         Spline degree
     """
+
+    k = np.random.randint(3, k)  # Randomly choose spline degree between 2 and 5
     # 1) Determine number of control points
+
+    
     if num_ctrl_pts is None:
-        n_ctrl = np.random.randint(*num_ctrl_range)
+        n_ctrl = np.random.randint(k+1,num_ctrl_range)
     else:
         n_ctrl = num_ctrl_pts
     
     # 2) Generate random control points in [0,1]^dim
-    ctrl_pts = np.random.rand(n_ctrl, dim).astype(np.float32)
+    ctrl_pts = np.random.rand(dim, n_ctrl).astype(np.float32)
 
     # 3) Fit B-spline to control points
-    tck, u = splprep(ctrl_pts.T, s=s, k=k)
+    tck, u = splprep(ctrl_pts, s=s, k=k)
     t, c, k = tck
 
     # 4) Normalize each coefficient array to [0,1]
-    c_norm = []
-    for dim_vals in c:
-        mn, mx = dim_vals.min(), dim_vals.max()
-        if mx > mn:
-            c_norm.append((dim_vals - mn) / (mx - mn))
-        else:
-            c_norm.append(np.zeros_like(dim_vals))
-    c_norm = np.stack(c_norm, axis=0).astype(np.float32)
-    tck_norm = (t, c_norm, k)
-
+    if norm:
+        c_norm = []
+        for dim_vals in c:
+            mn, mx = dim_vals.min(), dim_vals.max()
+            if mx > mn:
+                c_norm.append((dim_vals - mn) / (mx - mn))
+            else:
+                c_norm.append(np.zeros_like(dim_vals))
+        c_norm = np.stack(c_norm, axis=0).astype(np.float32)
+        tck_norm = (t, c_norm, k)
+        
+    else:
+        tck_norm = (t, c, k)
+        c_norm = c
     # 5) Generate dense points for smooth mask rendering
     u_dense = np.linspace(0, 1, dense_pts_for_mask)
     dense_spline_points = np.vstack(splev(u_dense, tck_norm)).T  # (dense_pts_for_mask, dim)
@@ -85,6 +97,7 @@ def spline2d_to_mask(
     border_ratio=0.05,
     assume_unit_box=True,
     dtype=np.uint8,
+    add_mask=False
 ):
     """
     Rasterise a 2-D spline/poly-line into a binary mask.
@@ -131,14 +144,30 @@ def spline2d_to_mask(
     px = (pts_norm[:, 0] * (W - 1 - 2 * border) + border).astype(int)
     py = ((1 - pts_norm[:, 1]) * (H - 1 - 2 * border) + border).astype(int)
 
-    # clip to the image in case of numerical spill-over
-    px = np.clip(px, 0, W - 1)
-    py = np.clip(py, 0, H - 1)
+    # # clip to the image in case of numerical spill-over
+    # px = np.clip(px, 0, W - 1)
+    # py = np.clip(py, 0, H - 1)
+    
+            # ---------- 3. rasterise -----------------------------------------------
 
-    # ---------- 3. rasterise -----------------------------------------------
-    img = Image.new("L", (W, H), 0)
-    ImageDraw.Draw(img).line(list(zip(px, py)), fill=255, width=line_width)
+    if add_mask:
+        # mask part of the spline
+        num_points = len(px)
+        
+        mask_length = int(num_points * np.random.uniform(0.0, 0.2))  # mask length as fraction of total points
 
+        if mask_length < 5:
+            mask_length = 5
+        start = np.random.randint(0, num_points - mask_length*2)
+        img = Image.new("L", (W, H), 0)
+        # print(f"Masking from {start} to {start + mask_length} mask length {mask_length}")
+        ImageDraw.Draw(img).line(list(zip(px[:start], py[:start])), fill=255, width=line_width)
+        ImageDraw.Draw(img).line(list(zip(px[start + mask_length:], py[start + mask_length:])), fill=255, width=line_width)
+    else:
+        # full spline without masking
+        img = Image.new("L", (W, H), 0)
+        ImageDraw.Draw(img).line(list(zip(px, py)), fill=255, width=line_width)
+    
     return np.asarray(img, dtype=dtype) , np.vstack((px, py)).T  # return projected spline in pixel coordinates
 def project_to_random_plane_mask(
         spline,
@@ -231,120 +260,6 @@ def project_to_random_plane_mask(
     projected_coords = np.vstack((px, py)).T
     return np.asarray(img, dtype=np.uint8), projected_coords, projection_params
 
-def build_dataset(base_dir, N=1000, img_size=(256,256),
-                  num_ctrl_pts=None, num_ctrl_range=(4, 10), num_output_pts=20, 
-                  order=3, s=0.1, dim=3, dense_pts_for_mask=1000):
-    """
-    Build a dataset of spline masks.
-    
-    Parameters
-    ----------
-    base_dir : str
-        Base directory where the dataset will be created
-    N : int
-        Number of different splines to generate
-    img_size : tuple
-        Image size (width, height)
-    num_ctrl_pts : int or None
-        Exact number of control points for B-spline generation. If None, uses random from num_ctrl_range
-    num_ctrl_range : tuple
-        Range for random number of control points (used only if num_ctrl_pts is None)
-    num_output_pts : int
-        Number of points to sample evenly along arc length
-    order : int
-        B-spline degree
-    s : float
-        Smoothing factor
-    dim : int
-        Dimensionality (2D or 3D)
-    dense_pts_for_mask : int
-        Number of dense points for smooth mask rendering
-    """
-    # Generate dataset name from parameters
-    W, H = img_size
-    ctrl_str = f"{num_ctrl_pts}ctrl" if num_ctrl_pts is not None else f"{num_ctrl_range[0]}-{num_ctrl_range[1]}ctrl"
-    s_str = f"s{s}".replace(".", "p")  # Replace decimal point with 'p'
-    
-    dataset_name = f"ds_{W}x{H}_{N}splines_{num_output_pts}pts_{ctrl_str}_k{order}_{s_str}_dim{dim}"
-    # Create base directory if it doesn't exist
-    if not os.path.exists(base_dir):
-        os.makedirs(base_dir)
-    root = os.path.join(base_dir, dataset_name)
-    
-    print(f"Creating dataset: {dataset_name}")
-    print(f"Full path: {root}")
-    
-    img_dir = os.path.join(root, "images")
-    lbl_dir = os.path.join(root, "labels")
-    os.makedirs(img_dir, exist_ok=True)
-    os.makedirs(lbl_dir, exist_ok=True)
-    counter = 0
-    
-    for i in range(N):
-        # 1) Generate one random spline with both arc-length and dense sampling
-        spline_points, dense_spline_points, c_norm, t, k = gen_random_bspline(
-            k=order, s=s, 
-            num_ctrl_pts=num_ctrl_pts, 
-            num_ctrl_range=num_ctrl_range, 
-            num_output_pts=num_output_pts, 
-            dim=dim,
-            dense_pts_for_mask=dense_pts_for_mask
-        )
-
-        # 2) apply a random rotation
-        # R_mat = random_rotation_matrix()
-        # rotated = spline3d @ R_mat.T
-
-        line_width = np.random.randint(3, 6)  # Random line width between 1 and 5
-        border_ratio = np.random.uniform(0.05, 0.3)  # Random border ratio between 0.05 and 0.3
-        
-        # 3) render to 2D mask using dense spline for smooth rendering
-        if dim == 3:
-            # First project dense points for mask generation
-            mask, _, projection_params = project_to_random_plane_mask(
-                dense_spline_points, img_size, line_width=line_width, border_ratio=border_ratio
-            )
-            # Then project arc-length sampled points using the same projection
-            _, projected_spline_in_px, _ = project_to_random_plane_mask(
-                spline_points, img_size, line_width=line_width, border_ratio=border_ratio, 
-                projection_params=projection_params
-            )
-        elif dim == 2:
-            # For 2D, generate mask from dense points
-            mask, _ = spline2d_to_mask(
-                dense_spline_points, img_size=img_size, line_width=line_width, 
-                border_ratio=border_ratio, assume_unit_box=True, dtype=np.uint8
-            )
-            # Project the arc-length sampled points 
-            _, projected_spline_in_px = spline2d_to_mask(
-                spline_points, img_size=img_size, line_width=line_width, 
-                border_ratio=border_ratio, assume_unit_box=True, dtype=np.uint8
-            )
-        import matplotlib.pyplot as plt
-        # plt.imshow(mask, cmap='gray')
-        # plt.plot(projected_spline_in_px[:, 0], projected_spline_in_px[:, 1], 'r-', linewidth=line_width)
-        # plt.show()
-        # 4) save with a simple index
-        idx = f"{i:05d}"
-        Image.fromarray((mask>0).astype(np.uint8)*255).save(
-            os.path.join(img_dir, f"{idx}.png")
-        )
-        np.savez(
-            os.path.join(lbl_dir, f"{idx}.npz"),
-            knots=t.astype(np.float32),
-            coeffs=c_norm,
-            degree=np.int32(k),
-            spline=projected_spline_in_px.astype(np.float32),  # projected spline in pixel coordinates
-            mask=mask.astype(np.int32),  # binary mask
-            line_width=np.int32(line_width)  # save line width
-            
-            
-        )
-        counter += 1
-        if counter % 500 == 0:
-            print(f"Saved {counter} samples...")
-
-    print("Done!")
 
 def resample_spline_by_arc_length(tck, num_points=200, initial_samples=1000):
     """
@@ -387,8 +302,119 @@ def resample_spline_by_arc_length(tck, num_points=200, initial_samples=1000):
 
     return resampled_points
 
+def build_dataset(base_dir, N=1000, img_size=(256,256),
+                  num_ctrl_pts=None, num_ctrl_range=10, num_output_pts=20, 
+                  order=3, s=0.1, dim=3, dense_pts_for_mask=1000,
+                  norm_spline=True, N_mask=10):
+    """
+    Build a dataset of spline masks.
+    
+    Parameters
+    ----------
+    base_dir : str
+        Base directory where the dataset will be created
+    N : int
+        Number of different splines to generate
+    img_size : tuple
+        Image size (width, height)
+    num_ctrl_pts : int or None
+        Exact number of control points for B-spline generation. If None, uses random from num_ctrl_range
+    num_ctrl_range : tuple
+        Range for random number of control points (used only if num_ctrl_pts is None)
+    num_output_pts : int
+        Number of points to sample evenly along arc length
+    order : int
+        B-spline degree
+    s : float
+        Smoothing factor
+    dim : int
+        Dimensionality (2D or 3D)
+    dense_pts_for_mask : int
+        Number of dense points for smooth mask rendering
+    """
+    # Generate dataset name from parameters
+    W, H = img_size
+    ctrl_str = f"{num_ctrl_pts}ctrl" if num_ctrl_pts is not None else f"{order}-{num_ctrl_range}ctrl"
+    s_str = f"s{s}".replace(".", "p")  # Replace decimal point with 'p'
+
+    dataset_name = f"ds_{W}_{N}_{num_output_pts}pts_{ctrl_str}_k{order}_{s_str}_dim{dim}_Nm{N_mask}"
+    # Create base directory if it doesn't exist
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
+    root = os.path.join(base_dir, dataset_name)
+    
+    print(f"Creating dataset: {dataset_name}")
+    print(f"Full path: {root}")
+    
+    img_dir = os.path.join(root, "images")
+    lbl_dir = os.path.join(root, "labels")
+    os.makedirs(img_dir, exist_ok=True)
+    os.makedirs(lbl_dir, exist_ok=True)
+    counter = 0
+    
+    for i in range(N):
+        # 1) Generate one random spline with both arc-length and dense sampling
+        spline_points, dense_spline_points, c_norm, t, k = gen_random_bspline(
+            k=order, s=s, 
+            num_ctrl_pts=num_ctrl_pts, 
+            num_ctrl_range=num_ctrl_range, 
+            num_output_pts=num_output_pts, 
+            dim=dim,
+            dense_pts_for_mask=dense_pts_for_mask,
+            norm=norm_spline
+        )
+
+        line_width = np.random.randint(3, 6)  # Random line width between 1 and 5
+        border_ratio = np.random.uniform(0.05, 0.3)  # Random border ratio between 0.05 and 0.3
+        
+
+        # Project the arc-length sampled points 
+        _, projected_spline_in_px = spline2d_to_mask(
+            spline_points, img_size=img_size, line_width=line_width, 
+            border_ratio=border_ratio, assume_unit_box=True, dtype=np.uint8
+        )
+
+        for j in range(N_mask):
+            if j == 0:
+                # 2) Project the dense spline points to a random plane and rasterise
+                mask, _ = spline2d_to_mask(
+                    dense_spline_points, img_size=img_size, line_width=line_width, 
+                    border_ratio=border_ratio, assume_unit_box=True, dtype=np.uint8,
+                    add_mask=False
+                )
+            else:
+                # 3) Use the same projection parameters for additional masks
+                mask, _ = spline2d_to_mask(
+                    dense_spline_points, img_size=img_size, line_width=line_width, 
+                    border_ratio=border_ratio, assume_unit_box=True, dtype=np.uint8,
+                    add_mask=True
+                )
+            # 4) save with a simple index
+            idx = f"{i:05d}_{j:02d}"
+            Image.fromarray((mask>0).astype(np.uint8)*255).save(
+                os.path.join(img_dir, f"{idx}.png")
+            )
+            np.savez(
+                os.path.join(lbl_dir, f"{idx}.npz"),
+                knots=t.astype(np.float32),
+                coeffs=c_norm,
+                degree=np.int32(k),
+                spline=projected_spline_in_px.astype(np.float32),  # projected spline in pixel coordinates
+                mask=mask.astype(np.int32),  # binary mask
+                line_width=np.int32(line_width)  # save line width
+                
+                
+            )
+            counter += 1
+        if counter % 500 == 0:
+            print(f"Saved {counter} samples...")
+
+    print("Done!")
+
+
 if __name__ == "__main__":
     build_dataset(base_dir="src/spline_dataset", 
-                    N=32, num_output_pts=10, img_size=(256,256),
-                    order=3, s=0.4, dim=2, num_ctrl_range=(4, 10),
-                    dense_pts_for_mask=1000)
+                    N=1000, num_output_pts=100, img_size=(256,256),
+                    order=5, s=10, dim=2, num_ctrl_range=15,
+                    dense_pts_for_mask=1000,
+                    norm_spline=False, N_mask=20)

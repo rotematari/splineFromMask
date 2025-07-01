@@ -1,12 +1,14 @@
 .venv
 src/spline_from_mask/bspline_dataset*
 src/spline_from_mask/__pycache__
+src/splineFromMask.egg-info
 *.egg-info
-src/splineFromMask.egg-info/
 wandb
 checkpoints
 results
 *.pth
 *.png
 *.npz
+*.pyc
 archive
+

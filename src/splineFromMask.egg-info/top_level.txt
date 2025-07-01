@@ -1,2 +1,5 @@
 edges_from_mask
+follow_mask_from_ends
+key_point_from_mask
+spline_dataset
 spline_from_mask

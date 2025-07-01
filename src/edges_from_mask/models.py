@@ -1,25 +1,125 @@
+from typing import Dict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
 import segmentation_models_pytorch as smp
 
+class DeepLabTransformer(nn.Module):
+    def __init__(self,
+                 num_pts: int,
+                 img_size: int = 256,
+                 d_model: int = 256,
+                 nhead: int = 8,
+                 num_enc_layers: int = 4,
+                 num_dec_layers: int = 4):
+        super().__init__()
+        self.img_size = img_size
+        
+        # 1) Load DeeplabV3+ backbone encoder
+        backbone = smp.DeepLabV3Plus(
+            encoder_name="resnet18",
+            encoder_weights="imagenet",
+            in_channels=1,
+            classes=1  # dummy
+        )
+        self.backbone = backbone.encoder
+        
+        # Get the feature map size after backbone processing
+        # For ResNet18 encoder, the output is typically 1/32 of input size
+        self.feat_size = img_size // 16  # e.g., 256//32 = 8
+        self.feat_seq_len = self.feat_size * self.feat_size  # e.g., 8*8 = 64
+        
+        # Get backbone output channels (ResNet18 final layer has 512 channels)
+        self.backbone_channels = 512
+        
+        # Project backbone features → d_model
+        self.input_proj = nn.Linear(self.backbone_channels, d_model)
+
+        # Positional embeddings for H*W tokens
+        self.pos_embed = nn.Parameter(torch.randn(self.feat_seq_len, 1, d_model))
+
+        # 2) Transformer encoder
+        enc_layer = nn.TransformerEncoderLayer(d_model, nhead, batch_first=False)
+        self.encoder = nn.TransformerEncoder(enc_layer, num_enc_layers)
+
+        # 3) Transformer decoder + learnable queries
+        dec_layer = nn.TransformerDecoderLayer(d_model, nhead, batch_first=False)
+        self.decoder = nn.TransformerDecoder(dec_layer, num_dec_layers)
+        self.query_embed = nn.Embedding(num_pts, d_model)
+
+        # 4) MLP to map each query output → (x,y)
+        self.coord_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, 2),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        B = x.shape[0]
+        
+        # --- 1) Get CNN features using encoder only ---
+        features = self.backbone(x)[-1]
+
+        # Flatten spatial dims → sequence
+        B, C, H, W = features.shape
+        seq = features.view(B, C, H*W).permute(2, 0, 1)     # (S=H*W, B, C)
+        seq = self.input_proj(seq)                      # → (S, B, d_model)
+        
+        # Handle positional embedding size mismatch
+        seq_len = seq.shape[0]
+        if seq_len != self.feat_seq_len:
+            # Resize positional embeddings if needed
+            pos_embed = self.pos_embed[:seq_len] if seq_len < self.feat_seq_len else self.pos_embed
+        else:
+            pos_embed = self.pos_embed
+            
+        seq = seq + pos_embed                           # Add positional embeddings
+
+        # --- 2) Encode ---
+        memory = self.encoder(seq)                      # (S, B, d_model)
+
+        # --- 3) Decode with point queries ---
+        query_pos = self.query_embed.weight.unsqueeze(1).repeat(1, B, 1)  # (num_pts, B, d_model)
+        # tgt = torch.zeros_like(query_pos)               # (num_pts, B, d_model)
+        tgt = query_pos
+        hs = self.decoder(tgt, memory)                  # (num_pts, B, d_model)
+
+        # --- 4) Regress (x,y) per query ---
+        coords = self.coord_head(hs)                    # (num_pts, B, 2)
+        coords = coords.permute(1, 0, 2)                # (B, num_pts, 2)
+        return coords
+
+
+
+
+
+
+
+
+
+
+
+
 class EncoderHeatmapHead(nn.Module):
-    def __init__(self):
+    def __init__(self,config:Dict = None):
         super().__init__()
         # load with an arbitrary number of classes (e.g. 1) just to build the model
         backbone = smp.DeepLabV3Plus(
             encoder_name="resnet18",
             encoder_weights="imagenet",
             in_channels=1,
-            classes=10
+            classes=config['num_pts']
         )
+        
         self.backbone = backbone
-
+        
 
     def forward(self, x):
         feats = self.backbone(x)        # returns feature map of shape (B, in_ch, H, W)
-        return feats         # projects to (B, 1, H, W)
+        
+        return feats
 
 class EncoderRegressionHead(nn.Module):
     """
@@ -38,7 +138,6 @@ class EncoderRegressionHead(nn.Module):
             nn.Conv2d(128,256,kernel_size=3, stride=2, padding=1), # 16×16
             nn.ReLU(inplace=True),
         )
-        self.encoder = models
         self.pool = nn.AdaptiveAvgPool2d((1,1))  # → B×256×1×1
         self.regressor = nn.Sequential(
             nn.Flatten(),               # → B×256
@@ -147,9 +246,6 @@ class EncoderRegressionHead_2(nn.Module):
         return x.view(-1, 2, 2)
 
 
-
-
-
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -226,15 +322,16 @@ class UNet(nn.Module):
     
 if __name__ == "__main__":
     # Example usage
-    model = EncoderHeatmapHead()
+    # model = EncoderHeatmapHead()
+    model = DeepLabTransformer(num_pts=10, d_model=256, nhead=8, num_enc_layers=4, num_dec_layers=4)
+    print(model)
     input_tensor = torch.randn(1, 1, 256, 256)  # Batch size of 1, 1 channel, 256x256 image
-    # load one image
-    
-    path = "/home/admina/splineFromMask/src/spline_from_mask/dataset_256_32_50pts/images/00001_00.png"  # Replace with your image path
+    # Load one image
+    path = "src/spline_dataset/ds_256x256_32splines_10pts_4-10ctrl_k3_s0p9_dim2/images/00001.png"  # Replace with your image path
     from PIL import Image
     import torchvision.transforms as transforms
-    
-    # load and pre procces gray scale image 
+
+    # Load and preprocess grayscale image
     image = Image.open(path).convert("L")  # Convert to grayscale
     transform = transforms.Compose([
         transforms.Resize((256, 256)),  # Resize to 256x256

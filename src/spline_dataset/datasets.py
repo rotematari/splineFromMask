@@ -295,7 +295,7 @@ class SplineEndPointDatasetHM(Dataset):
         # -- build heatmaps in pixel space --
         H, W = self.img_size[1], self.img_size[0]  # Convert to (height, width)
         hms = self.make_endpoint_heatmaps_1d(ep_px, H, W, self.sigma)
-        heatmaps = torch.from_numpy(hms)  # FloatTensor [1,H,W]
+        heatmaps = torch.from_numpy(hms).float()  # FloatTensor [1,H,W]
 
         return mask, heatmaps
 
@@ -404,18 +404,27 @@ class SplineHMDataset(Dataset):
         
         # Return shape [1, H, W] to maintain consistency with the rest of the code
         return hm
-if __name__ == "__main__":
+
+
+    def find_heatmap_center_weighted(heatmap_coords, heatmap_values):
+        """
+        Find the weighted centroid of heatmap coordinates.
+        
+        Args:
+            heatmap_coords: np.array of shape (N, 2) with (y, x) coordinates
+            heatmap_values: np.array of shape (N,) with corresponding heatmap values
+        
+        Returns:
+            center: np.array of shape (2,) with (y, x) center coordinates
+        """
+        # Weighted average of coordinates
+        total_weight = np.sum(heatmap_values)
+        center_y = np.sum(heatmap_coords[:, 0] * heatmap_values) / total_weight
+        center_x = np.sum(heatmap_coords[:, 1] * heatmap_values) / total_weight
+        
+        return np.array([center_y, center_x])
     
     
-    # plot the labels of SplineHMDataset
-
-    dataset = SplineHMDataset(root="src/spline_dataset/ds_256x256_32splines_10pts_4-10ctrl_k3_s0p9_dim2",
-                              sigma=5.0)
-
-    import matplotlib.pyplot as plt
-
-    # Get one sample
-    mask, heatmaps = dataset[0]
     def batch_centroids_torch(batch_H):
         """
         batch_H: torch tensor of shape (C, H, W)
@@ -429,7 +438,21 @@ if __name__ == "__main__":
         x_centers = (xs * batch_H).sum(dim=(1,2)) / totals
         y_centers = (ys * batch_H).sum(dim=(1,2)) / totals
         return np.array(list(zip(x_centers.tolist(), y_centers.tolist())))
-    centers = batch_centroids_torch(heatmaps)
+    
+if __name__ == "__main__":
+    
+    
+    # plot the labels of SplineHMDataset
+
+    dataset = SplineEndPointDatasetHM(root="src/spline_dataset/ds_256_10_100pts_4-10ctrl_k3_s1_dim2_Nm30",
+                              sigma=5.0)
+
+    import matplotlib.pyplot as plt
+
+    # Get one sample
+    mask, heatmaps = dataset[15]
+    
+
     # Convert tensors to numpy for plotting
     mask_np = mask.squeeze().numpy()  # Remove channel dimension
 
@@ -448,36 +471,20 @@ if __name__ == "__main__":
 
     # if heatmaps.shape[0] == 1:
     # Plot first heatmap
-    axes[1].imshow(heatmap_np[0], cmap='hot')
+    axes[1].imshow(heatmap_np, cmap='hot')
     axes[1].set_title('Heatmap 1 (First Endpoint)')
     axes[1].axis('off')
     # Plot mask with overlaid heatmaps
     # get heatmap coords
-    def find_heatmap_center_weighted(heatmap_coords, heatmap_values):
-        """
-        Find the weighted centroid of heatmap coordinates.
-        
-        Args:
-            heatmap_coords: np.array of shape (N, 2) with (y, x) coordinates
-            heatmap_values: np.array of shape (N,) with corresponding heatmap values
-        
-        Returns:
-            center: np.array of shape (2,) with (y, x) center coordinates
-        """
-        # Weighted average of coordinates
-        total_weight = np.sum(heatmap_values)
-        center_y = np.sum(heatmap_coords[:, 0] * heatmap_values) / total_weight
-        center_x = np.sum(heatmap_coords[:, 1] * heatmap_values) / total_weight
-        
-        return np.array([center_y, center_x])
+
 
     # If you have multiple heatmaps, shape (C, H, W):
 
 
     axes[2].imshow(mask_np, cmap='gray', alpha=0.7)
-    axes[2].imshow(heatmap_np[0], cmap='Reds', alpha=0.5)
+    axes[2].imshow(heatmap_np, cmap='Reds', alpha=0.5)
     # Plot the center of the heatmap
-    axes[2].scatter(centers[:, 0], centers[:, 1], color='blue', s=100, marker='x', label='Heatmap Center')
+    # axes[2].scatter(centers[:, 0], centers[:, 1], color='blue', s=100, marker='x', label='Heatmap Center')
     axes[2].legend()
     axes[2].set_title('Mask with Overlaid Heatmaps')
     axes[2].axis('off')
