@@ -186,3 +186,5 @@ if __name__ == "__main__":
         'num_workers': 0,  # DataLoader workers
     }
     main(config)
+
+    # TODO: add adaptive thresholding to the model to improve keypoint detection

@@ -41,11 +41,11 @@ def gen_random_bspline(k=3, s=0.1, num_ctrl_pts=None, num_ctrl_range=10,
     k : int
         Spline degree
     """
-
-    k = np.random.randint(3, k)  # Randomly choose spline degree between 2 and 5
+    if k <= 3:
+        k = np.random.randint(2, k)  # Randomly choose spline degree between 2 and 3
+    else:
+        k = np.random.randint(3, k)  # Randomly choose spline degree between 2 and 5
     # 1) Determine number of control points
-
-    
     if num_ctrl_pts is None:
         n_ctrl = np.random.randint(k+1,num_ctrl_range)
     else:
@@ -414,7 +414,7 @@ def build_dataset(base_dir, N=1000, img_size=(256,256),
 
 if __name__ == "__main__":
     build_dataset(base_dir="src/spline_dataset", 
-                    N=1000, num_output_pts=100, img_size=(256,256),
-                    order=5, s=10, dim=2, num_ctrl_range=15,
+                    N=4096, num_output_pts=16, img_size=(512,512),
+                    order=5, s=10, dim=2, num_ctrl_range=12,
                     dense_pts_for_mask=1000,
-                    norm_spline=False, N_mask=20)
+                    norm_spline=False, N_mask=1)

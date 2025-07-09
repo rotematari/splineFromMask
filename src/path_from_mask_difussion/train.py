@@ -46,7 +46,6 @@ class ModelTrainer:
         self.hm_weight       = config.get('heatmap_weight', 1.)
         self.scheduler = config.get('scheduler', None)
         self.mask_loss_weight = config.get('mask_loss_weight', 1.0)
-        self.vote_radius = config.get('vote_radius', 50.0)  # radius for voting loss
         # Teacher forcing rate
         self.teacher_forcing   = config.get('teacher_forcing', False)
         self.tf_initial_rate  = config.get('initial_tf_rate', 1.0)
@@ -87,81 +86,15 @@ class ModelTrainer:
         # 3) squared distance & Gaussian
         dist2 = (grid_x - x_t)**2 + (grid_y - y_t)**2
         return torch.exp(-dist2 / (2 * sigma**2))  # [B, n, H, W]
-    @staticmethod
-    def build_gt_H_U(mask: torch.Tensor, 
-                 nodes: torch.Tensor, 
-                 r: float):
-        """
-        mask:  [H, W] binary (0/1) tensor
-        nodes: [M, 2] float tensor of (x, y) coords for each node
-        r:     cutoff radius in pixels for heatmap support
-
-        Returns:
-        H_gt: [N, M]   heatmap scores in [0,1]
-        U_gt: [N, M, 2] unit-offset vectors
-        pix:  [N, 2]  pixel coords (x, y) of the mask==1 points
-        """
-        # 1) collect pixel coords where mask==1
-        coords = torch.where(mask > 0)             # each is [N]
-        pix = torch.stack(coords, dim=1).float() # [N, 2]
-
-        # 2) broadcast to compute distances to each node j
-        #    pix_exp: [N, 1, 2], nodes_exp: [1, M, 2]
-        pix_exp   = pix.unsqueeze(1)               # [N, 1, 2]
-        nodes_exp = nodes.unsqueeze(0)             # [1, M, 2]
-
-        # 3) Euclidean distance [N, M]
-        dist = torch.norm(pix_exp - nodes_exp, dim=2)
-
-        # 4) build H_gt by linear falloff, zero beyond radius
-        H_gt = torch.clamp(1.0 - dist / r, min=0.0) # [N, M]
-
-        # 5) build U_gt = (y_j - p_i) / dist  → [N, M, 2]
-        offset = nodes_exp - pix_exp              # [N, M, 2]
-        # avoid division by zero:
-        dist_eps = dist.unsqueeze(-1).clamp(min=1e-6)  # [N, M, 1]
-        U_gt = offset / dist_eps                   # [N, M, 2]
-
-        # 6) zero out offsets where pixel is too far (dist > r)
-        outside = (dist > r).unsqueeze(-1)         # [N, M, 1]
-        U_gt = U_gt.masked_fill(outside, 0.0)
-
-        return H_gt, U_gt, pix
-    def voting_loss(H_pred: torch.Tensor,
-                H_gt:   torch.Tensor,
-                U_pred: torch.Tensor,
-                U_gt:   torch.Tensor) -> torch.Tensor:
-        """
-        Computes the voting loss:
-        L = (1/N) * (sum_{i,j} (H_pred[i,j]-H_gt[i,j])^2
-                    + sum_{i,j} ||U_pred[i,j]-U_gt[i,j]||^2 )
-        Args:
-            H_pred: [N, M] heatmap predictions
-            H_gt:   [N, M] heatmap ground-truth
-            U_pred: [N, M, 2] offset predictions
-            U_gt:   [N, M, 2] offset ground-truth
-        Returns:
-            Scalar loss tensor.
-        """
-        N = H_pred.shape[0]
-
-        # Option A: exact formula via sums
-        heatmap_se = (H_pred - H_gt).pow(2)             # [N, M]
-        offset_se  = (U_pred - U_gt).pow(2).sum(dim=2)  # [N, M]
-        loss = (heatmap_se.sum() + offset_se.sum()) / N
-        return loss
-
-        # Option B: using MSELoss with sum-reduction
-        # loss_h = F.mse_loss(H_pred, H_gt, reduction='sum')
-        # loss_u = F.mse_loss(U_pred, U_gt, reduction='sum')
-        # return (loss_h + loss_u) / N
+    
     def _calc_loss(self, outputs: Tuple[Tensor,Tensor], targets: Tensor) -> Tensor:
         """
         outputs = (coords_pred, heatmap_pred)
-        coords_pred: [B,n,2]
+        coords_pred: [B,1,n,2] → we’ll squeeze to [B,n,2]
+        heatmap_pred: [B,n,H,W]
         targets:      [B,n,2]        (normalized x,y in [0,1])
         """
-        coords_pred = outputs
+        coords_pred, heatmap_pred = outputs
         coords_pred = coords_pred.squeeze(1)  # → [B, n, 2]
         coords_true = targets                  # [B, n, 2]
 
@@ -176,71 +109,24 @@ class ModelTrainer:
         )
         coord_loss = mid_loss + 3.0 * ends_loss
 
+        # ---- 2) heatmap loss ----
+        # make a batch of GT heatmaps
+        B, n, H, W = heatmap_pred.shape
+        heatmap_true = self._make_gaussian_heatmaps(coords_true, H, W, sigma=0.02)
+        heatmap_loss = self.hm_criterion(heatmap_pred, heatmap_true)
 
-        total_loss = coord_loss
-        return total_loss
-    def _calc_loss2(self,
-                outputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
-                targets: torch.Tensor,
-                masks:   torch.Tensor) -> torch.Tensor:
-        """
-        outputs = (coords_reg, coords_vote, hm, offsets)
-        coords_reg: [B, n, 2]    (normalized x,y ∈ [0,1])
-        coords_vote: [B, n, 2]   (normalized too, from soft-argmax)
-        hm:         [B, n, H, W] heatmap logits→softmax
-        offsets:    [B, n, H, W, 2] unit-offset vectors
-        targets:    [B, n, 2]      normalized ground-truth nodes
-        masks:      [B, H, W]      binary DLO masks
-        """
-        coords_reg, coords_vote, hm_pred, off_pred = outputs
-        B, n, H, W = hm_pred.shape
-
-        # 1) coordinate regression loss (with extra weight on ends)
-        ends_loss = (
-            self.coord_criterion(coords_reg[:, :2],  targets[:, :2]) +
-            self.coord_criterion(coords_reg[:, -2:], targets[:, -2:])
-        )
-        mid_loss = self.coord_criterion(coords_reg[:, 2:-2], targets[:, 2:-2])
-        coord_loss = mid_loss + 3.0 * ends_loss
-
-        # 2) voting loss over the batch
-        vote_loss = 0.0
-        for b in range(B):
-            mask_b = masks[b]            # [H, W]
-            nodes_norm = targets[b]      # [n, 2] in [0,1]
-            # convert to pixel coords
-            nodes_pix = nodes_norm * torch.tensor([W, H],
-                                device=nodes_norm.device)
-
-            # build ground-truth heatmaps & offsets
-            H_gt, U_gt, pix = self.build_gt_H_U(mask_b, nodes_pix, self.vote_radius)
-            # H_gt: [N, n], U_gt: [N, n, 2], pix: [N, 2]
-
-            # gather predicted heatmaps at each foreground pixel
-            # hm_pred[b]: [n, H, W] → reorder → [H, W, n] → mask→ [N, n]
-            H_pred_b = hm_pred[b].permute(1,2,0)[mask_b>0]       # [N, n]
-
-            # gather predicted offsets
-            # off_pred[b]: [n, H, W, 2] → [H, W, n, 2] → mask→ [N, n, 2]
-            U_pred_b = off_pred[b].permute(2,3,0,1)[mask_b>0]    # [N, n, 2]
-
-            vote_loss += self.voting_loss(H_pred_b, H_gt, U_pred_b, U_gt)
-
-        vote_loss = vote_loss / B
-
-        # 3) total
-        total = coord_loss + self.vote_weight * vote_loss
-        return total
+        # ---- 3) combine ----
+        return coord_loss + self.hm_weight * heatmap_loss
+    
     def run_epoch(self, train_loader: DataLoader) -> float:
         self.model.train()
         total_loss = 0.0
 
         for inputs, targets in tqdm(train_loader, desc="Training", leave=False):
             inputs, targets = inputs.to(self.device), targets.to(self.device)
-            
-            self.optimizer.zero_grad()
+            # start with the first point, but *do not detach*:
             preds = self.model(inputs)
-            loss = self._calc_loss2(preds, targets, inputs)
+            loss = self._calc_loss(preds, targets)
             # compute loss on mask
             loss.backward()
             self.optimizer.step()
@@ -357,7 +243,7 @@ class ModelTrainer:
                 ax = axes[i]
                 imgs = imgs.to(self.device)
 
-                path = self.model(imgs.unsqueeze(0))
+                path,_ = self.model(imgs.unsqueeze(0))
                 path = path.squeeze(0)
                 # move to CPU/numpy
                 mask = imgs.cpu().numpy()[0] 

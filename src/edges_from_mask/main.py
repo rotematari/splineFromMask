@@ -515,7 +515,7 @@ def set_seed(seed: int) -> None:
 
 def create_data_loaders(config: Dict[str, Any]) -> Tuple[DataLoader, DataLoader]:
     """Create train and validation data loaders."""
-    from spline_from_mask.datasets import SplineHMDataset,SplinePointDataset
+    from spline_dataset.datasets import SplineHMDataset,SplinePointDataset
     
     dataset = SplinePointDataset(root=config['dataset_dir'], normalize=True)
     print(f"Dataset loaded: {len(dataset)} samples")

@@ -4,8 +4,68 @@ import os
 from PIL import Image
 import numpy as np
 import torch
+from typing import Tuple
 
+class SplinePointDatasetNew(Dataset):
+    """
+    PyTorch Dataset for binary mask images and their B-spline control points.
+    """
+    def __init__(self,
+                 root: str,
+                 normalize: bool = True,
+                 resize_to: Tuple[int,int] = None):
+        self.root      = root
+        self.normalize = normalize
 
+        self.img_dir = os.path.join(root, "images")
+        self.lbl_dir = os.path.join(root, "labels")
+        self.ids     = sorted(os.listdir(self.img_dir))
+
+        # peek at first sample
+        if self.ids:
+            first = self.ids[0].split(".")[0]
+            lbl   = np.load(os.path.join(self.lbl_dir, f"{first}.npz"))
+            spline = lbl["spline"]           # (num_pts, 2)
+            self.num_pts = spline.shape[0]
+
+            img = Image.open(os.path.join(self.img_dir, f"{first}.png"))
+            W, H = img.size
+            img.close()
+            # if resize_to is provided, override
+            self.img_size = resize_to or (W, H)
+        else:
+            self.num_pts = 0
+            self.img_size = resize_to or (256, 256)
+
+        # build transform
+        tfms = []
+        tfms.append(transforms.ToTensor())  # ⇒ [0,1]
+        self.transform = transforms.Compose(tfms)
+
+    def __len__(self) -> int:
+        return len(self.ids)
+
+    def __getitem__(self, idx: int):
+        id_  = self.ids[idx].split(".")[0]
+        img  = Image.open(os.path.join(self.img_dir, f"{id_}.png")).convert("L")
+        mask = self.transform(img)   # (1,H,W)
+        img.close()
+
+        lbl    = np.load(os.path.join(self.lbl_dir, f"{id_}.npz"))
+        spline = torch.from_numpy(lbl["spline"]).float()  # (num_pts,2)
+        if self.normalize:
+            spline = self.normalize_spline(spline)
+
+        return mask, spline
+
+    def normalize_spline(self, spline: torch.Tensor) -> torch.Tensor:
+        """
+        Normalize spline points (pix coords) to [0,1] by image dims.
+        """
+        W, H = self.img_size
+        spline[:, 0] = spline[:, 0] / (W - 1)
+        spline[:, 1] = spline[:, 1] / (H - 1)
+        return spline
 
 class SplinePointDataset(Dataset):
     """
@@ -47,6 +107,7 @@ class SplinePointDataset(Dataset):
             self.transform = transforms.Compose([
                 transforms.Resize(resize_to),
                 transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5], std=[0.50]),  # Normalize to [-1, 1]
             ])
         else:
             self.transform = transforms.Compose([
